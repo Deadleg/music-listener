@@ -181,16 +181,14 @@ main = do
             print $ "Step width: " ++ show stepWidth
 
             -- windows of size stepWidth
-            let stft = V.map 
+            let stft = fmap 
                     (stftSection carray intSamples stepWidth) 
-                    (V.fromList [0, stepWidth..fromIntegral intSamples]) :: V.Vector (Step, V.Vector (Complex Double))
+                    [0, stepWidth..fromIntegral intSamples] :: [(Step, [(Complex Double)])]
 
             -- (window start, fft for window)
-            print $ V.length stft
-            let indicies = V.enumFromN 0 intSamples :: V.Vector Step
-            let plots' = V.map 
-                    (spectrogramIntensity samples samplerate indicies) 
-                    stft :: V.Vector (V.Vector (Step, Frequency, Amplitude))
+            let plots' = concat $ fmap 
+                    (spectrogramIntensity samples samplerate) 
+                    stft :: [(Step, Frequency, Amplitude)]
                 
             --let plots' = V.foldl' (V.++) V.empty plots :: V.Vector (Step, Frequency, Amplitude)
 
@@ -200,7 +198,7 @@ main = do
 --                    plots :: V.Vector (V.Vector (Double, Frequency, Amplitude))
 
             let stftData = generateStftData (fromIntegral stepWidth) plots'
-            let stftData' = V.toList $ V.filter (\((_, _), (_, _), z) -> z > 10) stftData
+            let stftData' = filter (\((_, _), (_, _), z) -> z > 10) stftData
 
 --            let ((_,_), (_,_), maxAmp) = maximumBy (\(_, _, z1) (_, _, z2) -> compare z1 z2) stftData'
 --            let getPercentage ((_, _), (_, _), amp) = amp ** 2 / maxAmp
@@ -225,17 +223,17 @@ main = do
             return ()
 
 -- convert to plottable set of values
-generateStftData :: Step -> V.Vector (V.Vector (Step, Frequency, Amplitude)) -> V.Vector ((Double, Double), (Double, Double), Amplitude)
-generateStftData windowSize = V.foldl' (\acc x -> acc V.++ (generateColumn windowSize x)) V.empty
+generateStftData :: Step -> [(Step, Frequency, Amplitude)] -> [((Double, Double), (Double, Double), Amplitude)]
+generateStftData windowSize = map (generateColumn windowSize)
 
 -- column in spectrogram
-generateColumn :: Step -> V.Vector (Step, Frequency, Amplitude) -> V.Vector ((Double, Double), (Double, Double), Amplitude)
-generateColumn windowSize = fmap (\(step, freq, amp) -> ((step, windowSize + step), (freq, freq + 100), amp))
+generateColumn :: Step -> (Step, Frequency, Amplitude) -> ((Double, Double), (Double, Double), Amplitude)
+generateColumn windowSize (step, freq, amp) = ((step, windowSize + step), (freq, freq + 100), amp)
 
-spectrogramIntensity :: Double -> Int -> V.Vector Step -> (Step, V.Vector (Complex Double)) -> V.Vector (Step, Frequency, Amplitude)
-spectrogramIntensity totalSamples sampleRate indicies (step, fft) = 
+spectrogramIntensity :: Double -> Int -> (Step, [(Complex Double)]) -> [(Step, Frequency, Amplitude)]
+spectrogramIntensity totalSamples sampleRate (step, fft) = 
         let rate = fromIntegral sampleRate / totalSamples
-        in V.map (\(cycle, x) -> (step, cycle * rate, magnitude x ** 2)) (V.zip indicies fft)
+        in map (\(cycle, x) -> (step, cycle * rate, magnitude x ** 2)) (zip [0..] fft)
 
 ftSignals :: Double -> [Complex Double] -> [Double] -> [Double]
 ftSignals totalSamples fft = fmap (\x -> foldr (\(cycle, amplitude) total -> total + sinFunc totalSamples cycle amplitude x) 0 sinAmplitudes +
@@ -253,7 +251,7 @@ windowedSection data_ totalSamples n stepWidth = ixmapWithIndP (0, totalSamples)
     else x * hannWindow (fromIntegral stepWidth) (fromIntegral i' - n)) data_
 
 -- | n = start of step sample number
-stftSection :: CArray Int Double -> Int -> Integer -> Integer -> (Step, V.Vector (Complex Double))
-stftSection !completeSample totalSamples stepWidth n = (fromIntegral n, V.convert $ VS.unsafeFromForeignPtr fftptr 0 len)
+stftSection :: CArray Int Double -> Int -> Integer -> Integer -> (Step, [(Complex Double)])
+stftSection !completeSample totalSamples stepWidth n = (fromIntegral n, VS.toList $ VS.unsafeFromForeignPtr fftptr 0 len)
             where fft = dftRC (windowedSection completeSample totalSamples n stepWidth)
                   (len, fftptr) = toForeignPtr fft
