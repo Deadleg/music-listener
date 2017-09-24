@@ -34,11 +34,12 @@ executable music-listener-exe
                      , gtk2hs-buildtools
                      , fft >= 0.1.8.4
                      , array <= 0.5.1.1
-                     , carray <= 0.1.6.5
+                     , carray <= 0.1.6.8
                      , ad >= 4.3.2.1
                      , hsignal <= 2.7.5
                      , lens >= 4.14
                      , colour >= 2.3.3
+                     , storable-tuple >= 0.0.3.2
   default-language:    Haskell2010
 
 test-suite music-listener-test
