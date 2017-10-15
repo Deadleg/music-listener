@@ -86,84 +86,101 @@ sinFunc samples cycle amplitude p = - amplitude * sin (2 * pi * cycle * p / samp
 cosFunc :: Double -> Double -> Double -> Double -> Double
 cosFunc samples cycle amplitude p = amplitude * cos (2 * pi * cycle * p / samples)
 
-performFFT :: VS.Vector (Double) -> Int -> IO (CArray Int Double, VS.Vector (Complex Double))
+performFFT :: VS.Vector Double -> Int -> IO (CArray Int Double, VS.Vector (Complex Double))
 performFFT vector intSamples = do
-            let (vec, x1, x2) = VS.unsafeToForeignPtr $ VS.take intSamples vector
-            carray <- unsafeForeignPtrToCArray vec (x1, x2)
-            let fft = dftRC carray
-            let (len, fftptr) = toForeignPtr fft
-            return $ (carray, VS.unsafeFromForeignPtr fftptr 0 len)
+    let (vec, x1, x2) = VS.unsafeToForeignPtr $ VS.take intSamples vector
+    carray <- unsafeForeignPtrToCArray vec (x1, x2)
+    let fft = dftRC carray
+    let (len, fftptr) = toForeignPtr fft
+    return (carray, VS.unsafeFromForeignPtr fftptr 0 len)
 
-findSignificantNotes :: [(Step, (Complex Double))] -> IO ()
-findSignificantNotes stft = do
-            let intList = take samples $ VS.toList vector :: [Double]
-            let y = intList
-            let x = [0..fromIntegral samples - 1] :: [Double]
+findSignificantNotes :: Int -> Int -> VS.Vector Double -> [(Step, [Complex Double])] -> IO ()
+findSignificantNotes sampleRate samples vector stft = do
+    let intList = take samples $ VS.toList vector :: [Double]
+    let y = intList
+    let x = [0..fromIntegral samples - 1] :: [Double]
 
-            toFile def{_fo_format=SVG} "sine.svg" $ do
-                layout_title .= "sine curve"
-                plot (line "" [zip x y])
+    toFile def{_fo_format=SVG} "sine.svg" $ do
+        layout_title .= "sine curve"
+        plot (line "" [zip x y])
 
-            (carray, fftvec) <- performFFT vector samples
+    (carray, fftvec) <- performFFT vector samples
 
-            let fftvals = VS.toList fftvec
-            let fftreals = realPart <$> fftvals :: [Double]
-            let fftimg = imagPart <$> fftvals :: [Double]
-            let fftabs = magnitude <$> fftvals :: [Double]
-            let fftx = [0..100] :: [Double]
-            toFile def{_fo_format=SVG} "real.svg" $ do
-                layout_title .= "real fft curve"
-                plot (points "abs" $ zip fftx fftabs)
-                plot (points "real" $ zip fftx fftreals)
-                plot (points "imaginary" $ zip fftx fftimg)
+    let fftvals = VS.toList fftvec
+    let fftreals = VS.map realPart fftvec :: VS.Vector Double
+    let fftimg = VS.map imagPart fftvec :: VS.Vector Double
+    let fftabs = VS.map magnitude fftvec :: VS.Vector Double
+    let fftx = [0..10000] :: [Double]
+    --toFile def{_fo_format=SVG} "real.svg" $ do
+    --    layout_title .= "real fft curve"
+    --    plot (points "abs" $ zip fftx fftabs)
+    --    plot (points "real" $ zip fftx fftreals)
+    --    plot (points "imaginary" $ zip fftx fftimg)
 
-            let diff f x = f x - f (x - 1)
-            let diffs' = fmap (diff (fftabs !!)) [1..(length fftabs - 1)]
-            toFile def{_fo_format=SVG} "diff.svg" $ do
-                layout_title .= "First derivative"
-                plot (points "diff" $ zip fftx diffs')
-            let diffs'' = fmap (diff (diffs' !!)) [1..(length diffs' - 1)]
-            toFile def{_fo_format=SVG} "diff2.svg" $ do
-                layout_title .= "Second derivative"
-                plot (points "diff" $ zip fftx diffs'')
-            let maxima = filter (\(_, value) -> value < -1) (zip [1..length diffs'] diffs'') -- tricky: the cycles returned is the cycles+1
-            let freqs = fmap (\(cycles, _) -> fromIntegral cycles * fromIntegral samplerate / fromIntegral samples) maxima
+    let diff f x = f x - f (x - 1)
+    let diffs' = VS.map (diff (fftabs VS.!)) (VS.fromList [1..(VS.length fftabs - 1)])
+    toFile def{_fo_format=SVG} "diff.svg" $ do
+        layout_title .= "First derivative"
+        plot (points "diff" $ zip fftx (VS.toList fftabs))
+    --let diffs'' = fmap (diff (diffs' !!)) [1..(length diffs' - 1)]
+    let peaks = VS.convert $ VS.filter 
+            (\x -> (diffs' VS.! x) > 0 && (diffs' VS.! (x + 1)) < 0) 
+            (VS.fromList [1..(VS.length diffs' - 1)]) :: V.Vector Int
 
-            let sinAmplitudes = take 500 $ fmap (\(cycle, _) -> (fromIntegral cycle, fftimg   !! cycle / fromIntegral (samples `div` 2))) maxima :: [(Double, Double)]
-            let cosAmplitudes = take 500 $ fmap (\(cycle, _) -> (fromIntegral cycle, fftreals !! cycle / fromIntegral (samples `div` 2))) maxima :: [(Double, Double)]
+    let peaks' = V.map 
+            (\i -> fst $ V.maximumBy
+                    (comparing snd)
+                    -- list of (index, magnitude)
+                    (V.map 
+                            (\x -> (x, fftabs VS.! x)) 
+                            (V.filter (\x -> x >= i && x < i + 100) peaks)))
+            (V.fromList [0,100..V.length peaks])
 
-            print "sin amps"
-            print sinAmplitudes
-            print "cos amps"
-            print cosAmplitudes
+    print $ V.map (\x -> (x, fftabs VS.! x)) peaks'
+    --toFile def{_fo_format=SVG} "diff2.svg" $ do
+    --    layout_title .= "Second derivative"
+    --    plot (points "diff" $ zip fftx diffs'')
+    let maxima = zip [0..V.length peaks'] (V.toList peaks') -- tricky: the cycles returned is the cycles+1
+    let maxima' = filter (\(cycle, value) -> fftabs VS.! value > 200) maxima
+    let freqs = fmap (\(_, cycles) -> fromIntegral cycles * fromIntegral sampleRate / fromIntegral samples) maxima
 
-            toFile def{_fo_format=SVG} "signals.svg" $ do
-                layout_title .= "curve"
-                plot (line "data" [zip x y])
-                plot
-                    (line "fit"
-                    [zip
-                        x
-                        (fmap
-                            (\p -> foldr (\(cycle, amplitude) total -> total + sinFunc (fromIntegral samples) cycle amplitude p) 0 sinAmplitudes +
-                                foldr (\(cycle, amplitude) total -> total + cosFunc (fromIntegral samples) cycle amplitude p) 0 cosAmplitudes) x)])
-            print "dominant freqs"
-            print $ fmap (\cycle -> fromIntegral (fst cycle) * fromIntegral samplerate / samples) maxima
+    print "dominant freqs"
+    print maxima'
+    print $ fmap (\cycle -> (fromIntegral (snd cycle) * fromIntegral sampleRate / fromIntegral samples, fftabs VS.! snd cycle)) maxima'
 
-            let signal = VS.take intSamples $ analytic_signal vector
-            let signalReal = VS.toList $ VS.map realPart signal
-            let signalImag = VS.toList $ VS.map imagPart signal
-            print $ VS.length signal
-            toFile def{_fo_format=SVG} "signal.svg" $ do
-                layout_title .= "Hibert transform derivative"
-                plot (line "Hilbert transform" [zip x (VS.toList $ VS.map imagPart signal)])
-                plot (line "Original signal" [zip x intList])
-                plot (line "Analytic signal" [zip x $ VS.toList (VS.map magnitude signal)])
+    --let sinAmplitudes = take 500 $ fmap (\(cycle, _) -> (fromIntegral cycle, fftimg   VS.! cycle / fromIntegral (samples `div` 2))) maxima :: [(Double, Double)]
+    --let cosAmplitudes = take 500 $ fmap (\(cycle, _) -> (fromIntegral cycle, fftreals VS.! cycle / fromIntegral (samples `div` 2))) maxima :: [(Double, Double)]
+
+    --print "sin amps"
+    --print sinAmplitudes
+    --print "cos amps"
+    --print cosAmplitudes
+
+    --toFile def{_fo_format=SVG} "sine2.svg" $ do
+    --    layout_title .= "curve"
+    --    plot (line "data" [zip x y])
+    --    plot
+    --        (line "fit"
+    --        [zip
+    --            x
+    --            (fmap
+    --                (\p -> foldr (\(cycle, amplitude) total -> total + sinFunc (fromIntegral samples) cycle amplitude p) 0 sinAmplitudes +
+    --                    foldr (\(cycle, amplitude) total -> total + cosFunc (fromIntegral samples) cycle amplitude p) 0 cosAmplitudes) x)])
+
+    --let signal = VS.take samples $ analytic_signal vector
+    --let signalReal = VS.toList $ VS.map realPart signal
+    --let signalImag = VS.toList $ VS.map imagPart signal
+    ----print $ VS.length signal
+    --toFile def{_fo_format=SVG} "signal.svg" $ do
+    --    layout_title .= "Hibert transform derivative"
+    --    plot (line "Hilbert transform" [zip x (VS.toList $ VS.map imagPart signal)])
+    --    plot (line "Original signal" [zip x intList])
+    --    plot (line "Analytic signal" [zip x $ VS.toList (VS.map magnitude signal)])
 
 main :: IO ()
 main = do
     (i, content) <- SF.readFile "piano.wav" :: IO (SF.Info, Maybe (SFV.Buffer Double))
-    let samplerate = SF.samplerate i
+    let sampleRate = SF.samplerate i
     let samples = SF.frames i * SF.channels i
     print samples
     print i
@@ -182,23 +199,14 @@ main = do
             -- windows of size stepWidth
             let stft = fmap 
                     (stftSection carray cutSamples stepWidth) 
-                    [0, stepWidth `div` 2..fromIntegral cutSamples] :: [(Step, [(Complex Double)])]
+                    [0, stepWidth `div` 2..fromIntegral cutSamples] :: [(Step, [Complex Double])]
 
-            findSignificantNotes stft
+            findSignificantNotes sampleRate cutSamples vector stft
 
             -- (window start, fft for window)
-            let plots' = concat $ fmap 
-                    (spectrogramIntensity (fromIntegral cutSamples) samplerate) 
+            let plots' = concatMap
+                    (spectrogramIntensity (fromIntegral cutSamples) sampleRate) 
                     stft :: [(Step, Frequency, Amplitude)]
-
---            print $ take 1000 plots'
-                
-            --let plots' = V.foldl' (V.++) V.empty plots :: V.Vector (Step, Frequency, Amplitude)
-
-            -- flatten
---            let plots' = V.map 
---                    (\(step, fftInfo) -> V.map (\(freq, amplitude) -> (fromIntegral step, freq, amplitude)) fftInfo)
---                    plots :: V.Vector (V.Vector (Double, Frequency, Amplitude))
 
             let stftData = generateStftData (fromIntegral stepWidth) plots'
             let stftData' = filter (\((_, _), (_, _), z) -> z > 1) stftData
@@ -233,10 +241,10 @@ generateStftData windowSize = map (generateColumn windowSize)
 generateColumn :: Step -> (Step, Frequency, Amplitude) -> ((Double, Double), (Double, Double), Amplitude)
 generateColumn windowSize (step, freq, amp) = ((step, windowSize + step), (freq, freq + 1), amp)
 
-spectrogramIntensity :: Double -> Int -> (Step, [(Complex Double)]) -> [(Step, Frequency, Amplitude)]
+spectrogramIntensity :: Double -> Int -> (Step, [Complex Double]) -> [(Step, Frequency, Amplitude)]
 spectrogramIntensity totalSamples sampleRate (step, fft) = 
         let rate = fromIntegral sampleRate / totalSamples
-        in filter (\(_, f,_ ) -> f < 2000) (map (\(cycle, x) -> (step, cycle * rate, magnitude x ** 2)) (zip [0..] fft))
+        in filter (\(_, f,_ ) -> f < 4000) (map (\(cycle, x) -> (step, cycle * rate, magnitude x ** 2)) (zip [0..] fft))
 
 ftSignals :: Double -> [Complex Double] -> [Double] -> [Double]
 ftSignals totalSamples fft = fmap (\x -> foldr (\(cycle, amplitude) total -> total + sinFunc totalSamples cycle amplitude x) 0 sinAmplitudes +
@@ -254,7 +262,7 @@ windowedSection data_ totalSamples n stepWidth = ixmapWithIndP (0, totalSamples)
     else x * hannWindow (fromIntegral stepWidth) (fromIntegral i' - n)) data_
 
 -- | n = start of step sample number
-stftSection :: CArray Int Double -> Int -> Integer -> Integer -> (Step, [(Complex Double)])
+stftSection :: CArray Int Double -> Int -> Integer -> Integer -> (Step, [Complex Double])
 stftSection !completeSample totalSamples stepWidth n = (fromIntegral n, VS.toList $ VS.unsafeFromForeignPtr fftptr 0 len)
             where fft = dftRC (windowedSection completeSample totalSamples n stepWidth)
                   (len, fftptr) = toForeignPtr fft
