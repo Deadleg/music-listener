@@ -115,25 +115,19 @@ findMaxima fftabs = V.filter
             diff f x = f x - f (x - 1) 
             diffs' = V.map (diff (fftabs V.!)) (V.fromList [1..(V.length fftabs - 1)])
 
-findSignificantNotesForSection :: Int -> Int -> V.Vector (Complex Double) -> IO ()
-findSignificantNotesForSection sampleRate samples fftSection = do
-    let fftabs = V.map magnitude fftSection :: V.Vector Double
-    print $ V.length fftSection
-    let peaks = findMaxima fftabs
-    print $ V.length peaks
-    print $ V.null peaks
-    let peaks' = filterMaxima peaks fftabs
-    print $ V.length peaks'
-    let maxima = zip [0..V.length peaks'] (V.toList peaks') -- tricky: the cycles returned is the cycles+1
-    let maxima' = filter (\(_, value) -> fftabs V.! value > 200) maxima
- --   let freqs = fmap (\(_, cycles) -> fromIntegral cycles * fromIntegral sampleRate / fromIntegral samples) maxima
-
-    print "dominant freqs"
-    print $ length maxima'
-    print $ fmap (\cycle -> (fromIntegral (snd cycle) * fromIntegral sampleRate / fromIntegral samples, fftabs V.! snd cycle)) maxima'
+findSignificantNotesForSection :: Int -> Int -> V.Vector (Complex Double) -> [(Frequency, Double)]
+findSignificantNotesForSection sampleRate samples fftSection = fmap 
+            (\cycle -> (fromIntegral (snd cycle) * fromIntegral sampleRate / fromIntegral samples, fftabs V.! snd cycle)) 
+            maxima'
+        where
+            fftabs = V.map magnitude fftSection :: V.Vector Double
+            peaks = findMaxima fftabs
+            peaks' = filterMaxima peaks fftabs
+            maxima = zip [0..V.length peaks'] (V.toList peaks') -- tricky: the cycles returned is the cycles+1
+            maxima' = filter (\(_, value) -> fftabs V.! value > 200) maxima
 
 findSignificantNotes :: Int -> Int -> [(Step, [Complex Double])] -> IO ()
-findSignificantNotes sampleRate samples = mapM_ (\(_, fft) -> findSignificantNotesForSection sampleRate samples (V.fromList fft))
+findSignificantNotes sampleRate samples = mapM_ (\(_, fft) -> print $ findSignificantNotesForSection sampleRate samples (V.fromList fft))
     --let intList = take samples $ VS.toList vector :: [Double]
     --let y = intList
     --let x = [0..fromIntegral samples - 1] :: [Double]
