@@ -95,14 +95,16 @@ performFFT vector intSamples = do
     return (carray, VS.unsafeFromForeignPtr fftptr 0 len)
 
 filterMaxima :: V.Vector Int -> V.Vector Double -> V.Vector Int
-filterMaxima peaks fftabs = V.filter (> -1) $ V.map 
+filterMaxima peaks fftabs 
+    | V.null peaks = V.empty
+    | otherwise = V.filter (> -1) $ V.map 
             (\i -> let section = V.map 
                             (\x -> (x, fftabs V.! x)) 
                             (V.filter (\x -> x < V.length fftabs && x >= i && x < i + 100) peaks)
                    in if V.null section then -1 else fst $ V.maximumBy
-                    (comparing snd)
-                    -- list of (index, magnitude)
-                    section)
+                        (comparing snd)
+                        -- list of (index, magnitude)
+                        section)
             (V.fromList [0,100..V.last peaks])
 
 findMaxima :: V.Vector Double -> V.Vector Int
@@ -116,10 +118,14 @@ findMaxima fftabs = V.filter
 findSignificantNotesForSection :: Int -> Int -> V.Vector (Complex Double) -> IO ()
 findSignificantNotesForSection sampleRate samples fftSection = do
     let fftabs = V.map magnitude fftSection :: V.Vector Double
+    print $ V.length fftSection
     let peaks = findMaxima fftabs
+    print $ V.length peaks
+    print $ V.null peaks
     let peaks' = filterMaxima peaks fftabs
+    print $ V.length peaks'
     let maxima = zip [0..V.length peaks'] (V.toList peaks') -- tricky: the cycles returned is the cycles+1
-    let maxima' = filter (\(cycle, value) -> fftabs V.! value > 200) maxima
+    let maxima' = filter (\(_, value) -> fftabs V.! value > 200) maxima
  --   let freqs = fmap (\(_, cycles) -> fromIntegral cycles * fromIntegral sampleRate / fromIntegral samples) maxima
 
     print "dominant freqs"
