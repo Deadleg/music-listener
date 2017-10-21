@@ -4,33 +4,77 @@
 
 module Main where
 
-import Lib
-import Foreign.Ptr (nullPtr, Ptr, IntPtr)
 import Control.Lens
 import Control.Monad (forM_)
-import Data.Int (Int32)
-import Data.List (minimumBy, maximumBy, foldl')
+import Data.List (maximumBy)
 import Data.Ord (comparing)
-import Data.Complex (magnitude, realPart, imagPart, polar, phase, Complex(..))
-import Foreign.Marshal.Alloc (malloc)
-import Control.Applicative ((<$>))
+import Data.Complex (magnitude, realPart, imagPart, Complex(..))
 import Graphics.Rendering.Chart.Easy
 import Graphics.Rendering.Chart.Backend.Cairo (toFile, FileOptions(..), FileFormat(..))
-import Data.Array.CArray.Base (unsafeForeignPtrToCArray, toForeignPtr, CArray(..), liftArray, ixmapWithIndP)
-import Data.Array.IArray (amap)
+import Data.Array.CArray.Base (unsafeForeignPtrToCArray, toForeignPtr, CArray(..), ixmapWithIndP)
 import Data.Colour.SRGB
 import Data.Colour.RGBSpace.HSL (hsl)
+import Data.Fixed (mod')
 import Math.FFT (dftRC)
 import Numeric.Signal (analytic_signal)
 import qualified Data.Vector.Storable as VS
 import qualified Data.Vector as V
-import qualified Data.Vector.Generic as VSG
 import qualified Sound.File.Sndfile as SF
 import qualified Sound.File.Sndfile.Buffer.Vector as SFV
 
 type Frequency = Double
 type Amplitude = Double
 type Step = Double
+
+data NoteLetter = A
+        | Ais
+        | B
+        | C
+        | Cis
+        | D
+        | Dis
+        | E
+        | F
+        | Fis
+        | G
+        | Gis
+        deriving (Show, Eq)
+
+data Note = Note NoteLetter Int deriving (Show, Eq)
+
+getBaseFreq :: NoteLetter -> Frequency
+getBaseFreq A = 27.50
+getBaseFreq Ais = 29.14
+getBaseFreq B = 30.87
+getBaseFreq C = 16.35
+getBaseFreq Cis = 17.32
+getBaseFreq D = 18.35
+getBaseFreq Dis = 19.45
+getBaseFreq E = 20.60
+getBaseFreq F = 21.83
+getBaseFreq Fis = 23.12
+getBaseFreq G = 24.50
+getBaseFreq Gis = 25.96
+
+getFreq :: Note -> Frequency
+getFreq (Note letter n) = getBaseFreq letter * (fromIntegral n + 1)
+
+getNote :: Frequency -> Maybe Note
+getNote freq
+    | logBase 2 (freq / getBaseFreq A) `mod'` 1 < 0.02  || logBase 2 (freq / getBaseFreq A) `mod'` 1 > 0.98 = Just (Note A (findN freq A))
+    | logBase 2 (freq / getBaseFreq Ais) `mod'` 1 < 0.02  || logBase 2 (freq / getBaseFreq Ais) `mod'` 1 > 0.98 = Just (Note Ais (findN freq Ais))
+    | logBase 2 (freq / getBaseFreq B) `mod'` 1 < 0.02 || logBase 2 (freq / getBaseFreq B) `mod'` 1 > 0.98 = Just (Note B (findN freq B))
+    | logBase 2 (freq / getBaseFreq C) `mod'` 1 < 0.02 || logBase 2 (freq / getBaseFreq C) `mod'` 1 > 0.98 = Just (Note C (findN freq C))
+    | logBase 2 (freq / getBaseFreq Cis) `mod'` 1 < 0.02 || logBase 2 (freq / getBaseFreq Cis) `mod'` 1 > 0.98 = Just (Note Cis (findN freq Cis))
+    | logBase 2 (freq / getBaseFreq D) `mod'` 1 < 0.02 || logBase 2 (freq / getBaseFreq D) `mod'` 1 > 0.98 = Just (Note D (findN freq D))
+    | logBase 2 (freq / getBaseFreq Dis) `mod'` 1 < 0.02 || logBase 2 (freq / getBaseFreq Dis) `mod'` 1 > 0.98 = Just (Note Dis (findN freq Dis))
+    | logBase 2 (freq / getBaseFreq E) `mod'` 1 < 0.02 || logBase 2 (freq / getBaseFreq E) `mod'` 1 > 0.98 = Just (Note E (findN freq E))
+    | logBase 2 (freq / getBaseFreq F) `mod'` 1 < 0.02 || logBase 2 (freq / getBaseFreq F) `mod'` 1 > 0.98 = Just (Note F (findN freq F))
+    | logBase 2 (freq / getBaseFreq Fis) `mod'` 1 < 0.02  || logBase 2 (freq / getBaseFreq Fis) `mod'` 1 > 0.98 = Just (Note Fis (findN freq Fis))
+    | logBase 2 (freq / getBaseFreq G) `mod'` 1 < 0.02 || logBase 2 (freq / getBaseFreq G) `mod'` 1 > 0.98 = Just (Note G (findN freq G))
+    | logBase 2 (freq / getBaseFreq Gis) `mod'` 1 < 0.02 || logBase 2 (freq / getBaseFreq Gis) `mod'` 1 > 0.98 = Just (Note Gis (findN freq Gis))
+    | otherwise = Nothing
+    where findN f n = round $ logBase 2 (f / getBaseFreq n) :: Int
 
 data PlotRects z x y = PlotRects {
     _plot_rect_title :: String,
@@ -127,7 +171,11 @@ findSignificantNotesForSection sampleRate samples fftSection = fmap
             maxima' = filter (\(_, value) -> fftabs V.! value > 200) maxima
 
 findSignificantNotes :: Int -> Int -> [(Step, [Complex Double])] -> IO ()
-findSignificantNotes sampleRate samples = mapM_ (\(_, fft) -> print $ findSignificantNotesForSection sampleRate samples (V.fromList fft))
+findSignificantNotes sampleRate samples = mapM_ (\(_, fft) -> do
+    let freqs = findSignificantNotesForSection sampleRate samples (V.fromList fft)
+    let notes = fmap (\(f, _) -> getNote f) freqs
+    print freqs
+    print notes)
     --let intList = take samples $ VS.toList vector :: [Double]
     --let y = intList
     --let x = [0..fromIntegral samples - 1] :: [Double]
@@ -188,7 +236,7 @@ findSignificantNotes sampleRate samples = mapM_ (\(_, fft) -> print $ findSignif
 
 main :: IO ()
 main = do
-    (i, content) <- SF.readFile "piano.wav" :: IO (SF.Info, Maybe (SFV.Buffer Double))
+    (i, content) <- SF.readFile "sine2.wav" :: IO (SF.Info, Maybe (SFV.Buffer Double))
     let sampleRate = SF.samplerate i
     let samples = SF.frames i * SF.channels i
     print samples
