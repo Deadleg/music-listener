@@ -1,4 +1,6 @@
-test:
+image: fpco/stack-build
+
+build:
   script:
-    - which apt-get
+    - stack-build
 
