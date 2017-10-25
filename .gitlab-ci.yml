@@ -1,5 +1,8 @@
 image: docker:latest
 
+service:
+- docker:dind
+
 before_script:
 - docker info
 
