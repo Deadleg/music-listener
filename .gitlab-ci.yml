@@ -1,12 +1,11 @@
 image: docker:latest
 
-services:
-- docker:dind
-
 before_script:
 - docker info
 
 build:
   script:
-    - stack build
+    - ls
+    - docker run fpco/stack-build pwd
+    - docker run -v `pwd`:/workspace fpco/stack-build stack install
 
