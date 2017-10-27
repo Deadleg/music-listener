@@ -1,7 +1,6 @@
 {-# LANGUAGE TemplateHaskell #-}
 {-# LANGUAGE BangPatterns #-}
 
-
 module Main where
 
 import Control.Lens
@@ -17,10 +16,16 @@ import Data.Colour.RGBSpace.HSL (hsl)
 import Data.Fixed (mod')
 import Math.FFT (dftRC)
 import Numeric.Signal (analytic_signal)
+import Data.Maybe (catMaybes)
+import Sound.MIDI.File
 import qualified Data.Vector.Storable as VS
 import qualified Data.Vector as V
 import qualified Sound.File.Sndfile as SF
 import qualified Sound.File.Sndfile.Buffer.Vector as SFV
+import qualified Sound.MIDI.File.Event as ME
+import qualified Sound.MIDI.Message.Channel as MC
+import qualified Sound.MIDI.Message.Channel.Voice as MCV
+import qualified Data.EventList.Relative.TimeBody as E
 
 type Frequency = Double
 type Amplitude = Double
@@ -168,14 +173,16 @@ findSignificantNotesForSection sampleRate samples fftSection = fmap
             peaks = findMaxima fftabs
             peaks' = filterMaxima peaks fftabs
             maxima = zip [0..V.length peaks'] (V.toList peaks') -- tricky: the cycles returned is the cycles+1
-            maxima' = filter (\(_, value) -> fftabs V.! value > 200) maxima
+            maxima' = filter (\(_, value) -> fftabs V.! value > 10) maxima
 
 findSignificantNotes :: Int -> Int -> [(Step, [Complex Double])] -> IO ()
 findSignificantNotes sampleRate samples = mapM_ (\(_, fft) -> do
     let freqs = findSignificantNotesForSection sampleRate samples (V.fromList fft)
-    let notes = fmap (\(f, _) -> getNote f) freqs
-    print freqs
-    print notes)
+    let notes = fmap (\(f, _) -> getNote f) (filter (\(f, _) -> 7903 > f) freqs)
+    print $ catMaybes notes
+    let midi = Cons Serial (Ticks 60) [E.singleton 1 (ME.MIDIEvent (MC.Cons (MC.toChannel 1) (MC.Voice (MCV.NoteOn (MC.toPitch 60) (MC.toVelocity 60)))))]
+    print midi)
+
     --let intList = take samples $ VS.toList vector :: [Double]
     --let y = intList
     --let x = [0..fromIntegral samples - 1] :: [Double]
@@ -236,7 +243,7 @@ findSignificantNotes sampleRate samples = mapM_ (\(_, fft) -> do
 
 main :: IO ()
 main = do
-    (i, content) <- SF.readFile "sine2.wav" :: IO (SF.Info, Maybe (SFV.Buffer Double))
+    (i, content) <- SF.readFile "piano.wav" :: IO (SF.Info, Maybe (SFV.Buffer Double))
     let sampleRate = SF.samplerate i
     let samples = SF.frames i * SF.channels i
     print samples
