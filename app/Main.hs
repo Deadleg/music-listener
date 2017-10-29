@@ -22,9 +22,11 @@ import qualified Data.Vector.Storable as VS
 import qualified Data.Vector as V
 import qualified Sound.File.Sndfile as SF
 import qualified Sound.File.Sndfile.Buffer.Vector as SFV
+import qualified Sound.MIDI.File.Save as MS
 import qualified Sound.MIDI.File.Event as ME
 import qualified Sound.MIDI.Message.Channel as MC
 import qualified Sound.MIDI.Message.Channel.Voice as MCV
+import qualified Sound.MIDI.Message.Channel.Mode as MCM
 import qualified Data.EventList.Relative.TimeBody as E
 
 type Frequency = Double
@@ -66,20 +68,23 @@ getFreq (Note letter n) = getBaseFreq letter * (fromIntegral n + 1)
 
 getNote :: Frequency -> Maybe Note
 getNote freq
-    | logBase 2 (freq / getBaseFreq A) `mod'` 1 < 0.02  || logBase 2 (freq / getBaseFreq A) `mod'` 1 > 0.98 = Just (Note A (findN freq A))
-    | logBase 2 (freq / getBaseFreq Ais) `mod'` 1 < 0.02  || logBase 2 (freq / getBaseFreq Ais) `mod'` 1 > 0.98 = Just (Note Ais (findN freq Ais))
-    | logBase 2 (freq / getBaseFreq B) `mod'` 1 < 0.02 || logBase 2 (freq / getBaseFreq B) `mod'` 1 > 0.98 = Just (Note B (findN freq B))
-    | logBase 2 (freq / getBaseFreq C) `mod'` 1 < 0.02 || logBase 2 (freq / getBaseFreq C) `mod'` 1 > 0.98 = Just (Note C (findN freq C))
-    | logBase 2 (freq / getBaseFreq Cis) `mod'` 1 < 0.02 || logBase 2 (freq / getBaseFreq Cis) `mod'` 1 > 0.98 = Just (Note Cis (findN freq Cis))
-    | logBase 2 (freq / getBaseFreq D) `mod'` 1 < 0.02 || logBase 2 (freq / getBaseFreq D) `mod'` 1 > 0.98 = Just (Note D (findN freq D))
-    | logBase 2 (freq / getBaseFreq Dis) `mod'` 1 < 0.02 || logBase 2 (freq / getBaseFreq Dis) `mod'` 1 > 0.98 = Just (Note Dis (findN freq Dis))
-    | logBase 2 (freq / getBaseFreq E) `mod'` 1 < 0.02 || logBase 2 (freq / getBaseFreq E) `mod'` 1 > 0.98 = Just (Note E (findN freq E))
-    | logBase 2 (freq / getBaseFreq F) `mod'` 1 < 0.02 || logBase 2 (freq / getBaseFreq F) `mod'` 1 > 0.98 = Just (Note F (findN freq F))
-    | logBase 2 (freq / getBaseFreq Fis) `mod'` 1 < 0.02  || logBase 2 (freq / getBaseFreq Fis) `mod'` 1 > 0.98 = Just (Note Fis (findN freq Fis))
-    | logBase 2 (freq / getBaseFreq G) `mod'` 1 < 0.02 || logBase 2 (freq / getBaseFreq G) `mod'` 1 > 0.98 = Just (Note G (findN freq G))
-    | logBase 2 (freq / getBaseFreq Gis) `mod'` 1 < 0.02 || logBase 2 (freq / getBaseFreq Gis) `mod'` 1 > 0.98 = Just (Note Gis (findN freq Gis))
+    | divisor A `mod'` 1 < 0.02   || divisor A `mod'` 1 > 0.98   = Just (Note A   (findN freq A))
+    | divisor Ais `mod'` 1 < 0.02 || divisor Ais `mod'` 1 > 0.98 = Just (Note Ais (findN freq Ais))
+    | divisor B `mod'` 1 < 0.02   || divisor B `mod'` 1 > 0.98   = Just (Note B   (findN freq B))
+    | divisor C `mod'` 1 < 0.02   || divisor C `mod'` 1 > 0.98   = Just (Note C   (1 + findN freq C))
+    | divisor Cis `mod'` 1 < 0.02 || divisor Cis `mod'` 1 > 0.98 = Just (Note Cis (1 + findN freq Cis))
+    | divisor D `mod'` 1 < 0.02   || divisor D `mod'` 1 > 0.98   = Just (Note D   (1 + findN freq D))
+    | divisor Dis `mod'` 1 < 0.02 || divisor Dis `mod'` 1 > 0.98 = Just (Note Dis (1 + findN freq Dis))
+    | divisor E `mod'` 1 < 0.02   || divisor E `mod'` 1 > 0.98   = Just (Note E   (1 + findN freq E))
+    | divisor F `mod'` 1 < 0.02   || divisor F `mod'` 1 > 0.98   = Just (Note F   (1 + findN freq F))
+    | divisor Fis `mod'` 1 < 0.02 || divisor Fis `mod'` 1 > 0.98 = Just (Note Fis (1 + findN freq Fis))
+    | divisor G `mod'` 1 < 0.02   || divisor G `mod'` 1 > 0.98   = Just (Note G   (1 + findN freq G))
+    | divisor Gis `mod'` 1 < 0.02 || divisor Gis `mod'` 1 > 0.98 = Just (Note Gis (1 + findN freq Gis))
     | otherwise = Nothing
-    where findN f n = round $ logBase 2 (f / getBaseFreq n) :: Int
+    where 
+        findN f n = round $ logBase 2 (f / getBaseFreq n) :: Int
+        divisor note = logBase 2 (freq / getBaseFreq note)
+
 
 data PlotRects z x y = PlotRects {
     _plot_rect_title :: String,
@@ -173,15 +178,45 @@ findSignificantNotesForSection sampleRate samples fftSection = fmap
             peaks = findMaxima fftabs
             peaks' = filterMaxima peaks fftabs
             maxima = zip [0..V.length peaks'] (V.toList peaks') -- tricky: the cycles returned is the cycles+1
-            maxima' = filter (\(_, value) -> fftabs V.! value > 10) maxima
+            maxima' = filter (\(_, value) -> fftabs V.! value > 50) maxima
+
+midiPitch :: Note -> Int
+midiPitch (Note letter n) = round $ 12 * logBase 2 ((fromIntegral (2 ^ n) * getBaseFreq letter) / 440) + 69
 
 findSignificantNotes :: Int -> Int -> [(Step, [Complex Double])] -> IO ()
-findSignificantNotes sampleRate samples = mapM_ (\(_, fft) -> do
-    let freqs = findSignificantNotesForSection sampleRate samples (V.fromList fft)
-    let notes = fmap (\(f, _) -> getNote f) (filter (\(f, _) -> 7903 > f) freqs)
-    print $ catMaybes notes
-    let midi = Cons Serial (Ticks 60) [E.singleton 1 (ME.MIDIEvent (MC.Cons (MC.toChannel 1) (MC.Voice (MCV.NoteOn (MC.toPitch 60) (MC.toVelocity 60)))))]
-    print midi)
+findSignificantNotes sampleRate samples stft = do 
+    notes <- mapM (\(step, fft) -> do
+                let freqs = findSignificantNotesForSection sampleRate samples (V.fromList fft)
+                let notes = fmap (\(f, _) -> getNote f) (filter (\(f, _) -> 7903 > f) freqs)
+                return $ map (\note -> (step, note)) $ catMaybes notes)
+            stft :: IO [[(Step, Note)]]
+    
+    print notes
+    let sections = map 
+            (foldl
+                    (\acc (step, note) -> 
+                            E.append acc (E.singleton (toElapsedTime 0) (ME.MIDIEvent (MC.Cons (MC.toChannel 1) (MC.Voice (MCV.NoteOn (MC.toPitch (midiPitch note)) (MC.toVelocity 20)))))))
+                    E.empty) 
+            notes
+
+    let t = E.append 
+                    (foldl (\acc section -> E.append acc (E.delay 100 section)) E.empty sections) $
+                    E.singleton (toElapsedTime 100) (ME.MIDIEvent (MC.Cons (MC.toChannel 1) (MC.Mode MCM.AllNotesOff)))
+
+    let midi = Cons Serial (Ticks 120) [t] :: T
+    print midi
+
+--    let midi' = Cons 
+--            Serial 
+--            (Ticks 60) 
+--            [ E.cons      100 (ME.MIDIEvent (MC.Cons (MC.toChannel 1) (MC.Voice (MCV.NoteOn  (MC.toPitch 60) (MC.toVelocity 60)))))
+--            ( E.cons      100 (ME.MIDIEvent (MC.Cons (MC.toChannel 1) (MC.Voice (MCV.NoteOn  (MC.toPitch 80) (MC.toVelocity 60)))))
+--            ( E.cons      100 (ME.MIDIEvent (MC.Cons (MC.toChannel 1) (MC.Voice (MCV.NoteOff (MC.toPitch 60) (MC.toVelocity 60)))))
+--            ( E.cons 100 (ME.MIDIEvent (MC.Cons (MC.toChannel 1) (MC.Voice (MCV.NoteOff (MC.toPitch 80) (MC.toVelocity 60)))))
+--            ( E.empty ))))
+--            ]
+
+    MS.toFile "midi.midi" midi
 
     --let intList = take samples $ VS.toList vector :: [Double]
     --let y = intList
@@ -243,7 +278,7 @@ findSignificantNotes sampleRate samples = mapM_ (\(_, fft) -> do
 
 main :: IO ()
 main = do
-    (i, content) <- SF.readFile "piano.wav" :: IO (SF.Info, Maybe (SFV.Buffer Double))
+    (i, content) <- SF.readFile "cello.wav" :: IO (SF.Info, Maybe (SFV.Buffer Double))
     let sampleRate = SF.samplerate i
     let samples = SF.frames i * SF.channels i
     print samples
