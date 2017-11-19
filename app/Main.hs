@@ -15,7 +15,7 @@ import Data.Colour.SRGB
 import Data.Colour.RGBSpace.HSL (hsl)
 import Data.Fixed (mod')
 import Math.FFT (dftRC)
-import Numeric.Signal (analytic_signal)
+import Numeric.Signal (analytic_signal, auto_correlation, deriv, Filterable)
 import Data.Maybe (catMaybes)
 import Sound.MIDI.File
 import qualified Data.Vector.Storable as VS
@@ -71,15 +71,15 @@ getNote freq
     | divisor A `mod'` 1 < 0.02   || divisor A `mod'` 1 > 0.98   = Just (Note A   (findN freq A))
     | divisor Ais `mod'` 1 < 0.02 || divisor Ais `mod'` 1 > 0.98 = Just (Note Ais (findN freq Ais))
     | divisor B `mod'` 1 < 0.02   || divisor B `mod'` 1 > 0.98   = Just (Note B   (findN freq B))
-    | divisor C `mod'` 1 < 0.02   || divisor C `mod'` 1 > 0.98   = Just (Note C   (1 + findN freq C))
-    | divisor Cis `mod'` 1 < 0.02 || divisor Cis `mod'` 1 > 0.98 = Just (Note Cis (1 + findN freq Cis))
-    | divisor D `mod'` 1 < 0.02   || divisor D `mod'` 1 > 0.98   = Just (Note D   (1 + findN freq D))
-    | divisor Dis `mod'` 1 < 0.02 || divisor Dis `mod'` 1 > 0.98 = Just (Note Dis (1 + findN freq Dis))
-    | divisor E `mod'` 1 < 0.02   || divisor E `mod'` 1 > 0.98   = Just (Note E   (1 + findN freq E))
-    | divisor F `mod'` 1 < 0.02   || divisor F `mod'` 1 > 0.98   = Just (Note F   (1 + findN freq F))
-    | divisor Fis `mod'` 1 < 0.02 || divisor Fis `mod'` 1 > 0.98 = Just (Note Fis (1 + findN freq Fis))
-    | divisor G `mod'` 1 < 0.02   || divisor G `mod'` 1 > 0.98   = Just (Note G   (1 + findN freq G))
-    | divisor Gis `mod'` 1 < 0.02 || divisor Gis `mod'` 1 > 0.98 = Just (Note Gis (1 + findN freq Gis))
+    | divisor C `mod'` 1 < 0.02   || divisor C `mod'` 1 > 0.98   = Just (Note C   (findN freq C))
+    | divisor Cis `mod'` 1 < 0.02 || divisor Cis `mod'` 1 > 0.98 = Just (Note Cis (findN freq Cis))
+    | divisor D `mod'` 1 < 0.02   || divisor D `mod'` 1 > 0.98   = Just (Note D   (findN freq D))
+    | divisor Dis `mod'` 1 < 0.02 || divisor Dis `mod'` 1 > 0.98 = Just (Note Dis (findN freq Dis))
+    | divisor E `mod'` 1 < 0.02   || divisor E `mod'` 1 > 0.98   = Just (Note E   (findN freq E))
+    | divisor F `mod'` 1 < 0.02   || divisor F `mod'` 1 > 0.98   = Just (Note F   (findN freq F))
+    | divisor Fis `mod'` 1 < 0.02 || divisor Fis `mod'` 1 > 0.98 = Just (Note Fis (findN freq Fis))
+    | divisor G `mod'` 1 < 0.02   || divisor G `mod'` 1 > 0.98   = Just (Note G   (findN freq G))
+    | divisor Gis `mod'` 1 < 0.02 || divisor Gis `mod'` 1 > 0.98 = Just (Note Gis (findN freq Gis))
     | otherwise = Nothing
     where 
         findN f n = round $ logBase 2 (f / getBaseFreq n) :: Int
@@ -169,6 +169,11 @@ findMaxima fftabs = V.filter
             diff f x = f x - f (x - 1) 
             diffs' = V.map (diff (fftabs V.!)) (V.fromList [1..(V.length fftabs - 1)])
 
+findMaxima2 :: Filterable a => Int -> V.Vector a -> V.Vector (Int, a)
+findMaxima2 threshold v = V.filter (\(i, x) -> x == V.maximum (neighbours i)) $
+                          V.imap (\i x -> (i, x)) v
+        where neighbours x0 = V.ifilter (\i _ -> abs (x0 - i) <= threshold) v
+
 findSignificantNotesForSection :: Int -> Int -> V.Vector (Complex Double) -> [(Frequency, Double)]
 findSignificantNotesForSection sampleRate samples fftSection = fmap 
             (\cycle -> (fromIntegral (snd cycle) * fromIntegral sampleRate / fromIntegral samples, fftabs V.! snd cycle)) 
@@ -178,10 +183,10 @@ findSignificantNotesForSection sampleRate samples fftSection = fmap
             peaks = findMaxima fftabs
             peaks' = filterMaxima peaks fftabs
             maxima = zip [0..V.length peaks'] (V.toList peaks') -- tricky: the cycles returned is the cycles+1
-            maxima' = filter (\(_, value) -> fftabs V.! value > 50) maxima
+            maxima' = filter (\(_, value) -> fftabs V.! value > 20) maxima
 
 midiPitch :: Note -> Int
-midiPitch (Note letter n) = round $ 12 * logBase 2 ((fromIntegral (2 ^ n) * getBaseFreq letter) / 440) + 69
+midiPitch (Note letter n) = round $ 12 * logBase 2 (((2 ^ n) * getBaseFreq letter) / 440) + 69
 
 findSignificantNotes :: Int -> Int -> [(Step, [Complex Double])] -> IO ()
 findSignificantNotes sampleRate samples stft = do 
@@ -191,7 +196,8 @@ findSignificantNotes sampleRate samples stft = do
                 return $ map (\note -> (step, note)) $ catMaybes notes)
             stft :: IO [[(Step, Note)]]
     
-    print notes
+    print $ map (map (\(s, note) -> (s, note, midiPitch note))) notes 
+
     let sections = map 
             (foldl
                     (\acc (step, note) -> 
@@ -200,12 +206,10 @@ findSignificantNotes sampleRate samples stft = do
             notes
 
     let t = E.append 
-                    (foldl (\acc section -> E.append acc (E.delay 100 section)) E.empty sections) $
-                    E.singleton (toElapsedTime 100) (ME.MIDIEvent (MC.Cons (MC.toChannel 1) (MC.Mode MCM.AllNotesOff)))
+            (foldl (\acc section -> E.append acc (E.delay 100 section)) E.empty sections) $
+            E.singleton (toElapsedTime 100) (ME.MIDIEvent (MC.Cons (MC.toChannel 1) (MC.Mode MCM.AllNotesOff)))
 
     let midi = Cons Serial (Ticks 120) [t] :: T
-    print midi
-
 --    let midi' = Cons 
 --            Serial 
 --            (Ticks 60) 
@@ -217,14 +221,6 @@ findSignificantNotes sampleRate samples stft = do
 --            ]
 
     MS.toFile "midi.midi" midi
-
-    --let intList = take samples $ VS.toList vector :: [Double]
-    --let y = intList
-    --let x = [0..fromIntegral samples - 1] :: [Double]
-
---    toFile def{_fo_format=SVG} "sine.svg" $ do
---        layout_title .= "sine curve"
---        plot (line "" [zip x y])
 
 --    (carray, fftvec) <- performFFT vector samples
 
@@ -276,9 +272,33 @@ findSignificantNotes sampleRate samples stft = do
     --    plot (line "Original signal" [zip x intList])
     --    plot (line "Analytic signal" [zip x $ VS.toList (VS.map magnitude signal)])
 
+autoCorrelate :: Filterable a => VS.Vector a -> Int -> IO ()
+autoCorrelate vector sampleRate = do
+    let result = auto_correlation 1000 vector
+    let y = map realToFrac $ VS.toList result :: [Double]
+    --let values = [zip (map (\x -> x / fromIntegral sampleRate) [1..]) y] :: [[(Double, Double)]]
+    let values = [zip [1..] y] :: [[(Double, Double)]]
+    toFile def{_fo_format=SVG} "autocorrelation.svg" $ do
+        layout_title .= "auto correlation"
+        plot (line "" values)
+
+    let intList = map realToFrac $ VS.toList vector :: [Double]
+    let y = intList
+    let x = map (\x -> x / fromIntegral sampleRate) [1..] :: [Double]
+
+    toFile def{_fo_format=SVG} "sine.svg" $ do
+        layout_title .= "sine curve"
+        plot (line "" [zip x y])
+
+    let localMaxima = findMaxima2 10 (VS.convert result)
+    print $ V.map (\(i, x) -> (i, realToFrac x)) localMaxima
+    print $ V.imap (\j (i, _) -> if j == 0 then j else i - fst (localMaxima V.! (j - 1))) localMaxima
+    print $ fromIntegral sampleRate / fromIntegral (V.maximum 
+                (V.imap (\j (i, _) -> if j == 0 then j else i - fst (localMaxima V.! (j - 1))) localMaxima))
+
 main :: IO ()
 main = do
-    (i, content) <- SF.readFile "cello.wav" :: IO (SF.Info, Maybe (SFV.Buffer Double))
+    (i, content) <- SF.readFile "piano2.wav" :: IO (SF.Info, Maybe (SFV.Buffer Double))
     let sampleRate = SF.samplerate i
     let samples = SF.frames i * SF.channels i
     print samples
@@ -287,6 +307,9 @@ main = do
     case v of
         Nothing     -> print "Nothing!"
         Just vector -> do
+            -- get auto correlation
+            autoCorrelate vector sampleRate
+
             -- plot histogram
             let (vec, x1, x2) = VS.unsafeToForeignPtr vector
             carray <- unsafeForeignPtrToCArray vec (x1, x2)
