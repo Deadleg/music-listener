@@ -3,16 +3,17 @@
 
 module Main where
 
+import Chart.Heatmap
 import Control.Lens
 import Control.Monad (forM_)
 import Data.List (maximumBy)
 import Data.Ord (comparing)
+import Data.Colour.SRGB (sRGB, RGB(..))
+import Data.Colour.RGBSpace.HSL (hsl)
 import Data.Complex (magnitude, realPart, imagPart, Complex(..))
 import Graphics.Rendering.Chart.Easy
 import Graphics.Rendering.Chart.Backend.Cairo (toFile, FileOptions(..), FileFormat(..))
 import Data.Array.CArray.Base (unsafeForeignPtrToCArray, toForeignPtr, CArray(..), ixmapWithIndP)
-import Data.Colour.SRGB
-import Data.Colour.RGBSpace.HSL (hsl)
 import Data.Fixed (mod')
 import Math.FFT (dftRC)
 import Numeric.Signal (analytic_signal, auto_correlation, deriv, Filterable)
@@ -85,50 +86,6 @@ getNote freq
         findN f n = round $ logBase 2 (f / getBaseFreq n) :: Int
         divisor note = logBase 2 (freq / getBaseFreq note)
 
-
-data PlotRects z x y = PlotRects {
-    _plot_rect_title :: String,
-    _plot_rect_style :: z -> FillStyle,
-    _plot_rect_values :: [((x, x), (y, y), z)]
-}
-
-instance (PlotValue z, Real z) => Default (PlotRects z x y) where
-    def = PlotRects {
-        _plot_rect_title = "Default",
-        _plot_rect_style = \amp -> solidFillStyle (opaque $ sRGB (realToFrac $ 1 - amp) 0 (realToFrac amp)),
-        _plot_rect_values = []
-    }
-
-instance (PlotValue z, Real z, Fractional z, Floating z) => ToPlot (PlotRects z) where
-    toPlot p = Plot {
-        _plot_render = renderPlotRects p,
-        _plot_legend = [(_plot_rect_title p, renderPlotLegendRects p)],
-        _plot_all_points = (map (\((x,_), (_,_), _) -> x) pts ++ map (\((_, x), (_,_), _) -> x) pts, map (\((_,_), (y,_), _) -> y) pts ++ map (\((_,_), (_,y), _) -> y) pts)
-    }
-        where pts = _plot_rect_values p
-
-buildRectPath :: PointMapFn x y -> ((x,x),(y,y), z) -> Path
-buildRectPath pmap ((xLeft, xRight), (yBottom, yTop), _) =
-    MoveTo (pt xLeft yBottom) (
-    LineTo (pt xLeft yTop) (
-    LineTo (pt xRight yTop) (
-    LineTo (pt xRight yBottom) (
-    LineTo (pt xLeft yBottom) End))))
-    where pt x y = pmap (LValue x, LValue y)
-
-renderPlotRects :: (Real z, Fractional z, Floating z) => PlotRects z x y -> PointMapFn x y -> BackendProgram ()
-renderPlotRects p pmap =
-    forM_ values (\point -> withFillStyle (_plot_rect_style p (getPercentage point)) $ alignFillPath (buildRectPath pmap point) >>= fillPath)
-    where pmap' = mapXY pmap
-          values = _plot_rect_values p
-          ((_,_), (_,_), maxAmp) = maximumBy (\(_, _, z1) (_, _, z2) -> compare z1 z2) values
-          getPercentage ((_, _), (_, _), amp) = amp / maxAmp -- arbitrary scaling
-
-renderPlotLegendRects :: (Real z, Fractional z) => PlotRects z x y -> Rect -> BackendProgram ()
-renderPlotLegendRects p r = withFillStyle (_plot_rect_style p 0.5) $ fillPath (rectPath r)
-
-makeLenses ''PlotRects
-
 -- samples = N = number of samples
 -- n = sample number
 hannWindow :: Integer -> Integer -> Double
@@ -148,19 +105,25 @@ performFFT vector intSamples = do
     let (len, fftptr) = toForeignPtr fft
     return (carray, VS.unsafeFromForeignPtr fftptr 0 len)
 
+-- |Filter an array of maxima by partioning fftabs into bins of 100 elements, then finding the
+-- largest value in that bin.
+-- peaks are the list of indexes of the maxima.
 filterMaxima :: V.Vector Int -> V.Vector Double -> V.Vector Int
 filterMaxima peaks fftabs 
     | V.null peaks = V.empty
     | otherwise = V.filter (> -1) $ V.map 
             (\i -> let section = V.map 
                             (\x -> (x, fftabs V.! x)) 
-                            (V.filter (\x -> x < V.length fftabs && x >= i && x < i + 100) peaks)
+                            (V.filter (\x -> x < V.length fftabs && x >= i && x < i + binSize) peaks)
                    in if V.null section then -1 else fst $ V.maximumBy
                         (comparing snd)
                         -- list of (index, magnitude)
                         section)
-            (V.fromList [0,100..V.last peaks])
+            (V.fromList [0,binSize..V.last peaks])
+    where binSize = 100
 
+-- |Find the maxima from fftabs by finding all points where the left and right points
+-- are less than the current point.
 findMaxima :: V.Vector Double -> V.Vector Int
 findMaxima fftabs = V.filter 
             (\x -> (diffs' V.! x) > 0 && (diffs' V.! (x + 1)) < 0) 
@@ -176,20 +139,21 @@ findMaxima2 threshold v = V.filter (\(i, x) -> x == V.maximum (neighbours i)) $
 
 findSignificantNotesForSection :: Int -> Int -> V.Vector (Complex Double) -> [(Frequency, Double)]
 findSignificantNotesForSection sampleRate samples fftSection = fmap 
-            (\cycle -> (fromIntegral (snd cycle) * fromIntegral sampleRate / fromIntegral samples, fftabs V.! snd cycle)) 
+            (\cycle -> (fromIntegral cycle * fromIntegral sampleRate / fromIntegral samples, fftabs V.! cycle)) 
             maxima'
         where
             fftabs = V.map magnitude fftSection :: V.Vector Double
             peaks = findMaxima fftabs
             peaks' = filterMaxima peaks fftabs
-            maxima = zip [0..V.length peaks'] (V.toList peaks') -- tricky: the cycles returned is the cycles+1
-            maxima' = filter (\(_, value) -> fftabs V.! value > 20) maxima
+            maxima = V.toList peaks' -- tricky: the cycles returned is the cycles+1
+            maxima' = filter (\value -> fftabs V.! value > 20) maxima -- Find 'large' maxima
 
 midiPitch :: Note -> Int
 midiPitch (Note letter n) = round $ 12 * logBase 2 (((2 ^ n) * getBaseFreq letter) / 440) + 69
 
-findSignificantNotes :: Int -> Int -> [(Step, [Complex Double])] -> IO ()
-findSignificantNotes sampleRate samples stft = do 
+-- |Find notes that standout in each stft section.
+findSignificantNotes :: Int -> Int -> [(Step, [Complex Double])] -> String -> IO ()
+findSignificantNotes sampleRate samples stft filePrefix = do 
     notes <- mapM (\(step, fft) -> do
                 let freqs = findSignificantNotesForSection sampleRate samples (V.fromList fft)
                 let notes = fmap (\(f, _) -> getNote f) (filter (\(f, _) -> 7903 > f) freqs)
@@ -210,30 +174,9 @@ findSignificantNotes sampleRate samples stft = do
             E.singleton (toElapsedTime 100) (ME.MIDIEvent (MC.Cons (MC.toChannel 1) (MC.Mode MCM.AllNotesOff)))
 
     let midi = Cons Serial (Ticks 120) [t] :: T
---    let midi' = Cons 
---            Serial 
---            (Ticks 60) 
---            [ E.cons      100 (ME.MIDIEvent (MC.Cons (MC.toChannel 1) (MC.Voice (MCV.NoteOn  (MC.toPitch 60) (MC.toVelocity 60)))))
---            ( E.cons      100 (ME.MIDIEvent (MC.Cons (MC.toChannel 1) (MC.Voice (MCV.NoteOn  (MC.toPitch 80) (MC.toVelocity 60)))))
---            ( E.cons      100 (ME.MIDIEvent (MC.Cons (MC.toChannel 1) (MC.Voice (MCV.NoteOff (MC.toPitch 60) (MC.toVelocity 60)))))
---            ( E.cons 100 (ME.MIDIEvent (MC.Cons (MC.toChannel 1) (MC.Voice (MCV.NoteOff (MC.toPitch 80) (MC.toVelocity 60)))))
---            ( E.empty ))))
---            ]
 
-    MS.toFile "midi.midi" midi
+    MS.toFile (filePrefix ++ ".midi") midi
 
---    (carray, fftvec) <- performFFT vector samples
-
---    let fftvals = VS.toList fftvec
---    let fftreals = VS.map realPart fftvec :: VS.Vector Double
---    let fftimg = VS.map imagPart fftvec :: VS.Vector Double
---    let fftabs = VS.map magnitude fftvec :: VS.Vector Double
---    let fftx = [0..10000] :: [Double]
---    toFile def{_fo_format=SVG} "real.svg" $ do
---        layout_title .= "real fft curve"
---        plot (points "abs" $ zip fftx fftabs)
---        plot (points "real" $ zip fftx fftreals)
---        plot (points "imaginary" $ zip fftx fftimg)
 --    toFile def{_fo_format=SVG} "diff.svg" $ do
 --        layout_title .= "First derivative"
 --        plot (points "diff" $ zip fftx (VS.toList fftabs))
@@ -282,23 +225,38 @@ autoCorrelate vector sampleRate = do
         layout_title .= "auto correlation"
         plot (line "" values)
 
-    let intList = map realToFrac $ VS.toList vector :: [Double]
-    let y = intList
-    let x = map (\x -> x / fromIntegral sampleRate) [1..] :: [Double]
-
-    toFile def{_fo_format=SVG} "sine.svg" $ do
-        layout_title .= "sine curve"
-        plot (line "" [zip x y])
-
     let localMaxima = findMaxima2 10 (VS.convert result)
     print $ V.map (\(i, x) -> (i, realToFrac x)) localMaxima
     print $ V.imap (\j (i, _) -> if j == 0 then j else i - fst (localMaxima V.! (j - 1))) localMaxima
     print $ fromIntegral sampleRate / fromIntegral (V.maximum 
                 (V.imap (\j (i, _) -> if j == 0 then j else i - fst (localMaxima V.! (j - 1))) localMaxima))
 
+graphSignal :: Filterable a => VS.Vector a -> Int -> IO ()
+graphSignal vector sampleRate = do
+    let intList = map realToFrac $ VS.toList vector :: [Double]
+    let y = intList
+    let x = map (\x -> x / fromIntegral sampleRate) [1..200] :: [Double]
+    toFile def{_fo_format=SVG} "signal.svg" $ do
+        layout_x_axis . laxis_title .= "Elapsed time (s)"
+        layout_title .= "signal curve"
+        plot (line "" [zip x y])
+
+graphFFTSignal :: VS.Vector (Complex Double) -> Int -> Int -> IO ()
+graphFFTSignal fftvec samples sampleRate = do
+    let fftreals = VS.toList $ VS.map realPart fftvec :: [Double]
+    let fftimg = VS.toList $ VS.map imagPart fftvec :: [Double]
+    let fftabs = VS.toList $ VS.map magnitude fftvec :: [Double]
+    let fftx = map (\x -> fromIntegral (x * sampleRate) / fromIntegral samples) [0..1000] :: [Double]
+    toFile def{_fo_format=SVG} "fft.svg" $ do
+        layout_title .= "fft curve"
+        layout_x_axis . laxis_title .= "Frequency (Hz)"
+        plot (points "abs" $ zip fftx fftabs)
+        plot (points "real" $ zip fftx fftreals)
+        plot (points "imaginary" $ zip fftx fftimg)
+
 main :: IO ()
 main = do
-    (i, content) <- SF.readFile "piano2.wav" :: IO (SF.Info, Maybe (SFV.Buffer Double))
+    (i, content) <- SF.readFile "sine.wav" :: IO (SF.Info, Maybe (SFV.Buffer Double))
     let sampleRate = SF.samplerate i
     let samples = SF.frames i * SF.channels i
     print samples
@@ -307,13 +265,22 @@ main = do
     case v of
         Nothing     -> print "Nothing!"
         Just vector -> do
+            graphSignal vector sampleRate
+
+            -- Run FFT on whole dataset and plot the result
+            (_, fftvec) <- performFFT vector samples
+            graphFFTSignal fftvec samples sampleRate
+
+            findSignificantNotes sampleRate samples [(0, VS.toList fftvec)] "fft"
+
             -- get auto correlation
             autoCorrelate vector sampleRate
 
             -- plot histogram
             let (vec, x1, x2) = VS.unsafeToForeignPtr vector
             carray <- unsafeForeignPtrToCArray vec (x1, x2)
-            let stepWidth = 5000 :: Integer
+            --let stepWidth = fromIntegral samples :: Integer
+            let stepWidth = 10000 :: Integer
             print $ "Step width: " ++ show stepWidth
             let cutSamples = (samples `div` fromIntegral stepWidth) * fromIntegral stepWidth :: Int
 
@@ -322,7 +289,7 @@ main = do
                     (stftSection carray cutSamples stepWidth) 
                     [0, stepWidth `div` 2..fromIntegral cutSamples] :: [(Step, [Complex Double])]
 
-            findSignificantNotes sampleRate cutSamples stft
+            findSignificantNotes sampleRate cutSamples stft "stft"
 
             -- (window start, fft for window)
             let plots' = concatMap
